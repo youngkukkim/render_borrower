@@ -1,0 +1,31 @@
+{% extends "users/base.html" %}
+
+{% block title %}새 심의 신청{% endblock %}
+
+{% block content %}
+<h1>새 심의 신청</h1>
+
+<p>1단계: 기본 정보와 파일을 업로드하면, 다음 화면에서 파일에서 읽어온 항목들이 자동으로 생성됩니다.</p>
+
+<form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+
+    <!-- 기본정보 -->
+    <fieldset style="margin-bottom:16px;">
+        <legend>기본정보</legend>
+        {{ sub_form.as_p }}
+    </fieldset>
+
+    <!-- 파일 업로드 -->
+    <fieldset style="margin-bottom:16px;">
+        <legend>파일 업로드</legend>
+        <p style="font-size:12px; color:#666;">
+            허용 포맷: PDF / Excel(xlsx) / Docs(docx)
+        </p>
+        {{ upload_form.as_p }}
+    </fieldset>
+
+    <button type="submit">다음으로 (필드 자동 생성)</button>
+    <a href="{% url 'borrower_dashboard' %}">취소</a>
+</form>
+{% endblock %}

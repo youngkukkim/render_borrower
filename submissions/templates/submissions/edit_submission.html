@@ -1,0 +1,122 @@
+{% extends "users/base.html" %}
+
+{% block title %}심의 신청 수정{% endblock %}
+
+{% block content %}
+<h1>심의 신청 수정</h1>
+
+<p>
+    현재 상태: <strong>{{ submission.get_status_display }}</strong>
+    &nbsp;|&nbsp;
+    작성일: {{ submission.created_at|date:"Y-m-d H:i" }}
+</p>
+
+{% if submission.status == "FINALIZED" %}
+    <p style="color:red;">
+        이 신청서는 최종확정 상태입니다. 더 이상 수정할 수 없습니다.
+    </p>
+{% endif %}
+
+<form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+
+    <!-- 기본정보 -->
+    <fieldset style="margin-bottom:16px;">
+        <legend>기본정보</legend>
+        {{ sub_form.as_p }}
+    </fieldset>
+
+    <!-- 파일에서 추출된 가변 필드 -->
+    <fieldset style="margin-bottom:16px;">
+        <legend>파일에서 추출된 재무 필드</legend>
+        {% if dynamic_form.fields %}
+            {{ dynamic_form.as_p }}
+        {% else %}
+            <p>아직 추출된 필드가 없습니다. 파일을 업로드했는지 확인해 주세요.</p>
+        {% endif %}
+    </fieldset>
+
+    <!-- 파일 추가 업로드 -->
+    <fieldset style="margin-bottom:16px;">
+        <legend>추가 파일 업로드</legend>
+        <p style="font-size:12px; color:#666;">
+            이미 업로드된 파일은 아래 목록에서 교체할 수 있습니다.<br>
+            여기에서는 새로운 파일을 추가로 업로드합니다.
+        </p>
+        {{ upload_form.as_p }}
+    </fieldset>
+
+    {% if submission.status != "FINALIZED" %}
+    <!-- 저장 / 제출 -->
+    <fieldset>
+        <legend>저장 / 제출</legend>
+        <button type="submit" name="action" value="draft">임시저장</button>
+        <button type="submit" name="action" value="submit">검토 요청(제출)</button>
+        <a href="{% url 'borrower_dashboard' %}">대시보드로 돌아가기</a>
+    </fieldset>
+    {% else %}
+        <p><a href="{% url 'borrower_dashboard' %}">대시보드로 돌아가기</a></p>
+    {% endif %}
+</form>
+
+<hr>
+
+<!-- 기존 업로드 파일 목록 + 교체 -->
+<h2>기존 업로드 파일</h2>
+<ul>
+    {% for upload in submission.uploads.all %}
+        <li style="margin-bottom:6px;">
+            <span>{{ upload.original_name }}</span>
+            {% if upload.file %}
+                (<a href="{{ upload.file.url }}">보기</a>)
+            {% endif %}
+            {% if submission.status != "FINALIZED" %}
+                <form
+                    action="{% url 'replace_upload_inline' upload.id %}"
+                    method="post"
+                    enctype="multipart/form-data"
+                    style="display:inline-block; margin-left:8px;"
+                >
+                    {% csrf_token %}
+                    <input type="file" name="file" style="display:inline-block; max-width:200px;">
+                    <button type="submit">교체</button>
+                </form>
+            {% endif %}
+        </li>
+    {% empty %}
+        <li>업로드된 파일이 없습니다.</li>
+    {% endfor %}
+</ul>
+
+<hr>
+
+<!-- 타임라인 -->
+<h2>이 제출물의 기록 (타임라인)</h2>
+
+{% if events %}
+    <ul>
+        {% for ev in events %}
+            <li style="margin-bottom:10px; padding:8px; border:1px solid #ddd;">
+                <div style="font-size:12px; color:#555;">
+                    {{ ev.created_at|date:"Y-m-d H:i" }} |
+                    {{ ev.actor.username }} |
+                    {{ ev.get_event_type_display }}{% if ev.field_name %} ({{ ev.field_name }}){% endif %}
+                </div>
+                {% if ev.from_status or ev.to_status %}
+                    <div style="font-size:12px; color:#777; margin-top:2px;">
+                        상태: {{ ev.from_status|default:"-" }} → {{ ev.to_status|default:"-" }}
+                    </div>
+                {% endif %}
+                {% if ev.message %}
+                    <div style="margin-top:4px;">
+                        {{ ev.message }}
+                    </div>
+                {% endif %}
+            </li>
+        {% endfor %}
+    </ul>
+{% else %}
+    <p>아직 기록이 없습니다.</p>
+{% endif %}
+
+{% endblock %}

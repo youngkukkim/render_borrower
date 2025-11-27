@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}프로젝트 B{% endblock %}</title>
+</head>
+<body>
+<nav>
+    <a href="{% url 'home' %}">홈</a>
+
+    {% if user.is_authenticated %}
+        <span>{{ user.username }}님</span>
+        <form action="{% url 'logout' %}" method="post" style="display:inline;">
+            {% csrf_token %}
+            <button type="submit">로그아웃</button>
+        </form>
+    {% else %}
+        <a href="{% url 'login' %}">로그인</a>
+        <a href="{% url 'signup' %}">회원가입</a>
+    {% endif %}
+</nav>
+<hr>
+
+{% block content %}{% endblock %}
+</body>
+</html>

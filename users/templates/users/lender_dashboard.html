@@ -1,0 +1,24 @@
+{% extends "users/base.html" %}
+
+{% block title %}대주 대시보드{% endblock %}
+
+{% block content %}
+<h1>대주 대시보드</h1>
+
+<h2>차주 목록</h2>
+
+{% if borrowers %}
+    <ul>
+        {% for b in borrowers %}
+            <li>
+                <a href="{% url 'lender_borrower_detail' b.id %}">
+                    {{ b.username }}
+                </a>
+                (신청서: {{ b.submission_count }})
+            </li>
+        {% endfor %}
+    </ul>
+{% else %}
+    <p>등록된 차주가 없습니다.</p>
+{% endif %}
+{% endblock %}

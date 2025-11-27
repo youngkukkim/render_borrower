@@ -1,0 +1,20 @@
+{% extends "users/base.html" %}
+
+{% block title %}차주 상세{% endblock %}
+
+{% block content %}
+<h1>차주: {{ borrower.username }}</h1>
+
+{% if submissions %}
+  <ul>
+    {% for s in submissions %}
+      <li>
+        <a href="{% url 'submission_review' s.id %}">{{ s.title }}</a>
+        — 상태: {{ s.get_status_display }} / 작성일: {{ s.created_at|date:"Y-m-d H:i" }}
+      </li>
+    {% endfor %}
+  </ul>
+{% else %}
+  <p>신청서가 없습니다.</p>
+{% endif %}
+{% endblock %}

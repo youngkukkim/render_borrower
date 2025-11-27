@@ -1,0 +1,95 @@
+{% extends "users/base.html" %}
+
+{% block title %}신청서 검토{% endblock %}
+
+{% block content %}
+<h1>신청서 검토: {{ submission.title }}</h1>
+
+<p>
+    차주: {{ submission.borrower.username }}<br>
+    상태: <strong>{{ submission.get_status_display }}</strong><br>
+    작성일: {{ submission.created_at|date:"Y-m-d H:i" }}
+</p>
+
+<h3>파일에서 추출된 재무 필드</h3>
+<ul>
+    {% for f in fields %}
+        <li>{{ f.label }}: {{ f.value }}</li>
+    {% empty %}
+        <li>추출된 필드가 없습니다.</li>
+    {% endfor %}
+</ul>
+
+<h3>첨부파일</h3>
+<ul>
+    {% for u in submission.uploads.all %}
+        <li>
+            {{ u.original_name }}
+            {% if u.file %}
+                (<a href="{{ u.file.url }}">보기</a>)
+            {% endif %}
+        </li>
+    {% empty %}
+        <li>첨부된 파일이 없습니다.</li>
+    {% endfor %}
+</ul>
+
+<hr>
+
+<h2>이 제출물의 기록 (타임라인)</h2>
+
+{% if events %}
+    <ul>
+        {% for ev in events %}
+            <li style="margin-bottom:10px; padding:8px; border:1px solid #ddd;">
+                <div style="font-size:12px; color:#555;">
+                    {{ ev.created_at|date:"Y-m-d H:i" }} |
+                    {{ ev.actor.username }} |
+                    {{ ev.get_event_type_display }}
+                </div>
+                {% if ev.from_status or ev.to_status %}
+                    <div style="font-size:12px; color:#777; margin-top:2px;">
+                        상태: {{ ev.from_status|default:"-" }} → {{ ev.to_status|default:"-" }}
+                    </div>
+                {% endif %}
+                {% if ev.message %}
+                    <div style="margin-top:4px;">
+                        {{ ev.message }}
+                    </div>
+                {% endif %}
+            </li>
+        {% endfor %}
+    </ul>
+{% else %}
+    <p>아직 기록이 없습니다.</p>
+{% endif %}
+
+<hr>
+
+<h3>피드백 작성</h3>
+<form method="post">
+    {% csrf_token %}
+    {{ event_form.as_p }}
+    <button type="submit" name="action" value="comment">코멘트 남기기</button>
+    <button type="submit" name="action" value="request_revision">수정요청 남기기</button>
+</form>
+
+<hr>
+
+<h3>상태 변경</h3>
+
+{% if submission.status != "FINALIZED" %}
+    <form method="post" style="display:inline-block; margin-right:8px;">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="finalize">
+        <button type="submit">최종확정</button>
+    </form>
+{% else %}
+    <p><strong>이 신청서는 최종확정 상태입니다. 더 이상 수정 요청을 하지 않습니다.</strong></p>
+{% endif %}
+
+<p style="margin-top:12px;">
+    <a href="{% url 'lender_dashboard' %}">대주 대시보드로 돌아가기</a>
+</p>
+
+{% endblock %}
