@@ -8,4 +8,6 @@ urlpatterns = [
 
     # 대주 리뷰
     path("submission/<int:submission_id>/review/", views.submission_review, name="submission_review"),
+    path("submission/<int:submission_id>/data/", views.submission_data_view, name="submission_data_view"),
+    path("submission/<int:submission_id>/data/edit/", views.edit_submission_data, name="edit_submission_data"),
 ]

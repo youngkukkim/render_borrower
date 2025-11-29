@@ -52,6 +52,21 @@ class Submission(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    normalized_payload = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="ntpd extractor가 생성한 중첩 구조 데이터",
+    )
+    normalized_records = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="레이블 경로/값을 flat하게 담은 리스트",
+    )
+    normalized_overrides = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="차주가 수정한 값(키 경로 → 값)",
+    )
 
     class Meta:
         ordering = ["-created_at"]

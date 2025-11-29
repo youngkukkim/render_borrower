@@ -12,13 +12,14 @@
 </p>
 
 <h3>파일에서 추출된 재무 필드</h3>
-<ul>
-    {% for f in fields %}
-        <li>{{ f.label }}: {{ f.value }}</li>
-    {% empty %}
-        <li>추출된 필드가 없습니다.</li>
-    {% endfor %}
-</ul>
+<p style="font-size:13px; margin-bottom:8px;">
+    <a href="{% url 'submission_data_view' submission.id %}">
+        ➜ 정규화된 데이터 전체 미리보기
+    </a>
+</p>
+<p style="font-size:13px; color:#555;">
+    대용량 데이터는 위 링크에서 시트별 구조로 확인해 주세요.
+</p>
 
 <h3>첨부파일</h3>
 <ul>

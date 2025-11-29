@@ -1,0 +1,35 @@
+{% extends "users/base.html" %}
+
+{% block title %}데이터 수정{% endblock %}
+
+{% block content %}
+<h1>정규화 데이터 수정 — {{ submission.title }}</h1>
+
+<p style="color:#555; font-size:13px;">
+    제출된 엑셀에서 추출된 모든 값을 텍스트 형태로 편집할 수 있습니다.
+    저장 시 화면과 대주 측에 보이는 값이 함께 갱신됩니다.
+</p>
+
+<form method="post" style="margin-top:16px;">
+    {% csrf_token %}
+    {{ formset.management_form }}
+
+    <div style="max-height:70vh; overflow:auto; border:1px solid #e2e2e2; border-radius:6px; padding:8px;">
+        {% for form in formset %}
+            <div style="margin-bottom:12px;">
+                {{ form.key }}{{ form.label }}
+                <label style="display:block; font-weight:bold; margin-bottom:4px;">
+                    {{ form.initial.label }}
+                </label>
+                {{ form.value }}
+            </div>
+        {% endfor %}
+    </div>
+
+    <div style="margin-top:12px;">
+        <button type="submit">저장하기</button>
+        <a href="{% url 'edit_submission' submission.id %}" style="margin-left:10px;">신청서 편집으로 돌아가기</a>
+    </div>
+</form>
+
+{% endblock %}

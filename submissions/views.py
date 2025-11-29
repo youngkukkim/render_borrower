@@ -1,13 +1,27 @@
+import logging
+from collections import OrderedDict
+from typing import Any, Dict, Tuple
 from decimal import Decimal, InvalidOperation
 import re
+import copy
+import json
+import hashlib
 
 import openpyxl
+from django.contrib import messages
+from django import forms
+from django.forms import formset_factory
 from django.contrib.auth.decorators import login_required
 from django.http import HttpResponseForbidden, HttpResponseRedirect
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 
 from users.models import User
+from .parsers import (
+    NTPDParserUnavailable,
+    get_ntpd_sheet_specs,
+    parse_with_ntpd,
+)
 from .forms import (
     SubmissionForm,
     MultiUploadForm,
@@ -15,6 +29,8 @@ from .forms import (
     SubmissionDynamicFieldsForm,
 )
 from .models import Submission, Upload, SubmissionEvent, SubmissionField
+
+logger = logging.getLogger(__name__)
 
 
 def _is_lender_like(user: User) -> bool:
@@ -72,7 +88,6 @@ def extract_fields_from_upload(upload: Upload):
     file_path = upload.file.path  # 실제 서버 상의 파일 경로
 
     wb = openpyxl.load_workbook(file_path, data_only=True)
-    print(wb.sheetnames[0])
     ws = wb[wb.sheetnames[0]]
 
     fields = []
@@ -118,6 +133,541 @@ def extract_fields_from_upload(upload: Upload):
     return fields
 
 
+def _records_to_field_specs(records: list[dict]) -> list[dict]:
+    """
+    ntpd extractor records -> SubmissionField 생성용 dict 리스트
+    """
+    specs = []
+    for idx, record in enumerate(records, start=1):
+        key_tokens = [token for token in record.get("key_path", []) if token]
+        label_tokens = [token for token in record.get("label_path", []) if token]
+        raw_value = record.get("value")
+        value_str = "" if raw_value is None else str(raw_value)
+
+        data_type = SubmissionField.DataType.TEXT
+        try:
+            Decimal(value_str.replace(",", ""))
+            data_type = SubmissionField.DataType.NUMBER
+        except (InvalidOperation, AttributeError):
+            pass
+
+        specs.append(
+            {
+                "name": ".".join(key_tokens) if key_tokens else f"field_{idx}",
+                "label": " / ".join(label_tokens) if label_tokens else f"Field {idx}",
+                "value": value_str,
+                "data_type": data_type,
+                "order": idx,
+            }
+        )
+    return specs
+
+
+def _rebuild_submission_fields(submission: Submission, records: list[dict]) -> None:
+    specs = _records_to_field_specs(records)
+    SubmissionField.objects.filter(submission=submission).delete()
+    objs = [
+        SubmissionField(
+            submission=submission,
+            name=spec.get("name") or f"field_{idx}",
+            label=spec.get("label") or f"Field {idx}",
+            value=spec.get("value") or "",
+            data_type=spec.get("data_type") or SubmissionField.DataType.TEXT,
+            order=spec.get("order") or idx,
+        )
+        for idx, spec in enumerate(specs, start=1)
+    ]
+    if objs:
+        SubmissionField.objects.bulk_create(objs)
+
+
+def _format_display_value(value):
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value if v not in (None, ""))
+    return value
+
+
+def _as_list_items(value: Any):
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        items = [str(v).strip() for v in value if v not in (None, "")]
+        return items or None
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+
+    prepared = text.replace(", -", "\n-").replace(",  -", "\n-")
+    lines = []
+    for line in prepared.splitlines():
+        part = line.strip()
+        if not part:
+            continue
+        if part.startswith("-"):
+            part = part[1:].strip()
+        lines.append(part)
+    return lines or None
+
+
+def _is_numeric(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (int, float, Decimal)):
+        return True
+    try:
+        text = str(value).replace(",", "").strip()
+        if text == "":
+            return False
+        Decimal(text)
+        return True
+    except Exception:
+        return False
+
+
+def _resolve_path(data: Any, path: list[str] | None):
+    if not path:
+        return None
+    cur = data
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+        if cur is None:
+            return None
+    return cur
+
+
+def _key_path_to_str(path: list[str] | None) -> str:
+    if not path:
+        return ""
+    return "|".join(str(p) for p in path)
+
+
+def _apply_overrides_to_records(records: list[dict], overrides: dict[str, Any]) -> list[dict]:
+    if not overrides:
+        return records
+
+    updated: list[dict] = []
+    for record in records:
+        key = _key_path_to_str(record.get("key_path"))
+        new_value = overrides.get(key, record.get("value"))
+        updated.append(
+            {
+                "key_path": record.get("key_path") or [],
+                "label_path": record.get("label_path") or [],
+                "value": new_value,
+            }
+        )
+    return updated
+
+
+def _clone_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return copy.deepcopy(payload)
+    except Exception:
+        return json.loads(json.dumps(payload))
+
+
+def _apply_overrides_to_payload(payload: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    if not overrides:
+        return payload
+
+    cloned = _clone_payload(payload)
+    for key_str, value in overrides.items():
+        path = [segment for segment in key_str.split("|") if segment]
+        if not path:
+            continue
+        _set_nested_value(cloned, path, value)
+    return cloned
+
+
+def _set_nested_value(data: dict[str, Any], path: list[str], value: Any) -> None:
+    cur = data
+    for key in path[:-1]:
+        if not isinstance(cur, dict):
+            return
+        cur = cur.get(key)
+        if cur is None:
+            return
+    if isinstance(cur, dict):
+        cur[path[-1]] = value
+
+
+def _get_effective_records(submission: Submission) -> list[dict]:
+    records = submission.normalized_records or []
+    overrides = submission.normalized_overrides or {}
+    if overrides and records:
+        return _apply_overrides_to_records(records, overrides)
+    return records
+
+
+def _get_effective_payload(submission: Submission) -> dict[str, Any]:
+    payload = submission.normalized_payload or {}
+    overrides = submission.normalized_overrides or {}
+    if overrides and payload:
+        return _apply_overrides_to_payload(payload, overrides)
+    return payload
+
+
+def _build_spec_views_from_payload(payload: dict[str, Any]):
+    sheet_specs = get_ntpd_sheet_specs()
+    views: list[dict] = []
+
+    for sheet_name, specs in sheet_specs.items():
+        sheet_payload = payload.get(sheet_name)
+        if not sheet_payload:
+            continue
+
+        sections: list[dict] = []
+        basic_rows: list[dict] = []
+
+        for spec in specs:
+            mode = spec.get("mode")
+            if mode == "table":
+                block = _build_plain_table_section(sheet_payload, spec)
+                if block:
+                    sections.append(block)
+                continue
+
+            if mode == "period_table":
+                blocks = _build_period_table_sections(sheet_payload, spec)
+                if blocks:
+                    sections.extend(blocks)
+                continue
+
+            value = _resolve_path(sheet_payload, spec.get("key_path"))
+            if value in (None, "", []):
+                continue
+            label = spec.get("label_path", [sheet_name, "항목"])[-1]
+            basic_rows.append(
+                {
+                    "label": label,
+                    "value": _format_display_value(value),
+                    "items": _as_list_items(value),
+                    "align": "right" if _is_numeric(value) else "left",
+                    "raw_value": str(value or ""),
+                    "key": _key_path_to_str(spec.get("key_path")),
+                }
+            )
+
+        if basic_rows:
+            sections.insert(
+                0,
+                {
+                    "mode": "list",
+                    "title": "기본 항목",
+                    "rows": basic_rows,
+                },
+            )
+
+        if sections:
+            views.append({"sheet": sheet_name, "sections": sections})
+
+    return views
+
+
+def _build_plain_table_section(sheet_payload: dict[str, Any], spec: dict[str, Any]):
+    rows_data = _resolve_path(sheet_payload, spec.get("parent_key_path"))
+    if not rows_data:
+        return None
+
+    columns_map = spec.get("columns_map") or {}
+    col_keys = [cfg[0] for cfg in columns_map.values()]
+    headers = [cfg[1] for cfg in columns_map.values()]
+
+    table_rows = []
+    for row in rows_data:
+        row_cells = []
+        for key in col_keys:
+            raw = (row or {}).get(key, "")
+            row_cells.append(
+                {
+                    "value": _format_display_value(raw),
+                }
+            )
+        table_rows.append(row_cells)
+
+    total = None
+    total_label = None
+    total_path = spec.get("total_key_path")
+    if total_path:
+        total_row = _resolve_path(sheet_payload, total_path)
+        if isinstance(total_row, dict):
+            total = []
+            for key in col_keys:
+                raw = total_row.get(key, "")
+                total.append(
+                    {
+                        "value": _format_display_value(raw),
+                        "align": "right" if _is_numeric(raw) else "left",
+                    }
+                )
+            total_label_path = spec.get("total_label_path")
+            if total_label_path:
+                total_label = total_label_path[-1]
+                if total:
+                    total = total[1:]
+
+    title = spec.get("parent_label_path", ["표 데이터"])[-1]
+    return {
+        "mode": "plain_table",
+        "title": title,
+        "headers": headers,
+        "rows": table_rows,
+        "total": total,
+        "total_label": total_label,
+    }
+
+
+def _build_period_table_sections(sheet_payload: dict[str, Any], spec: dict[str, Any]):
+    table_root = _resolve_path(sheet_payload, spec.get("sheet_key_path"))
+    if not table_root:
+        return []
+
+    row_defs = _period_row_definitions(spec, table_root)
+    columns, has_subheaders = _period_columns(table_root, spec, row_defs)
+    if not columns:
+        return []
+
+    rows = []
+    for row_def in row_defs:
+        entry = _period_entry_data(table_root, row_def.get("data_path"))
+        cells = _build_period_row_cells(entry, columns)
+        rows.append(
+            {
+                "label": row_def["label"],
+                "indent": row_def.get("indent", 0),
+                "is_group": row_def.get("is_group", False),
+                "indent_px": row_def.get("indent", 0) * 18,
+                "cells": cells,
+            }
+        )
+
+    title = spec.get("sheet_label_path", ["기간 테이블"])[-1]
+    return [
+        {
+            "mode": "period_table",
+            "title": title,
+            "columns": columns,
+            "has_subheaders": has_subheaders,
+            "rows": rows,
+        }
+    ]
+
+
+def _period_row_definitions(spec: dict[str, Any], table_root: dict[str, Any]):
+    defs: list[dict] = []
+
+    row_tree = spec.get("row_tree")
+    if row_tree:
+        for label, node in row_tree.items():
+            defs.extend(_expand_row_tree(label, node, 0))
+        return defs
+
+    row_key_map = spec.get("row_key_map")
+    if row_key_map:
+        for label, key in row_key_map.items():
+            defs.append({"label": label, "data_path": (key,)})
+        return defs
+
+    for key in table_root.keys():
+        defs.append({"label": key, "data_path": (key,)})
+    return defs
+
+
+def _expand_row_tree(label: str, node: Any, indent: int):
+    rows = []
+    if isinstance(node, dict) and "children" in node:
+        rows.append({"label": label, "data_path": None, "indent": indent, "is_group": True})
+        parent_key = node.get("key")
+        children = node.get("children") or {}
+        for child_label, child_key in children.items():
+            rows.append(
+                {
+                    "label": child_label,
+                    "data_path": (parent_key, child_key),
+                    "indent": indent + 1,
+                }
+            )
+    else:
+        key = node.get("key") if isinstance(node, dict) else node
+        rows.append({"label": label, "data_path": (key,), "indent": indent})
+    return rows
+
+
+def _period_columns(table_root: dict[str, Any], spec: dict[str, Any], row_defs: list[dict]):
+    period_order: list[str] = []
+    col_depth = spec.get("col_header_depth", 1)
+
+    for row_def in row_defs:
+        entry = _period_entry_data(table_root, row_def.get("data_path"))
+        if not isinstance(entry, dict):
+            continue
+        for period in entry.keys():
+            if period not in period_order:
+                period_order.append(period)
+
+    if not period_order:
+        return [], False
+
+    columns = []
+    has_subheaders = False
+    col_key_map = spec.get("col_key_map")
+
+    if col_depth >= 2 and col_key_map:
+        has_subheaders = True
+        subheaders = [{"label": label, "key": key} for label, key in col_key_map.items()]
+        for period in period_order:
+            columns.append({"label": period, "subheaders": subheaders})
+    else:
+        for period in period_order:
+            columns.append({"label": period, "subheaders": None})
+
+    return columns, has_subheaders
+
+
+def _period_entry_data(table_root: dict[str, Any], data_path):
+    if not data_path:
+        return None
+    cur = table_root
+    for key in data_path:
+        if cur is None:
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _build_period_row_cells(entry: Any, columns: list[dict]):
+    cells = []
+    for column in columns:
+        if column["subheaders"]:
+            period_values = entry.get(column["label"], {}) if isinstance(entry, dict) else {}
+            cell_values = []
+            for sub in column["subheaders"]:
+                value = ""
+                if isinstance(period_values, dict):
+                    value = _format_display_value(period_values.get(sub["key"]))
+                align = "right" if _is_numeric(period_values.get(sub["key"])) else "left"
+                cell_values.append({"value": value, "align": align})
+            cells.append({"type": "multi", "values": cell_values})
+        else:
+            value = ""
+            if isinstance(entry, dict):
+                raw = entry.get(column["label"])
+                value = _format_display_value(raw)
+            else:
+                raw = None
+            align = "right" if _is_numeric(raw) else "left"
+            cells.append({"type": "single", "value": value, "align": align})
+    return cells
+
+
+def _build_structured_sections(records: list[dict]) -> list[dict]:
+    sheets: "OrderedDict[str, OrderedDict[str, list]]" = OrderedDict()
+    for record in records:
+        labels = [token for token in record.get("label_path", []) if token]
+        if not labels:
+            continue
+        sheet_name = labels[0]
+        section_name = labels[1] if len(labels) > 1 else "세부 항목"
+        entry_labels = labels[2:]
+
+        sheet_entry = sheets.setdefault(sheet_name, OrderedDict())
+        section_entry = sheet_entry.setdefault(section_name, [])
+        section_entry.append(
+            {
+                "labels": entry_labels,
+                "value": record.get("value"),
+            }
+        )
+
+    structured = []
+    for sheet_name, sections in sheets.items():
+        structured_sections = []
+        for section_name, entries in sections.items():
+            structured_sections.append(_build_section_block(section_name, entries))
+        structured.append({"sheet": sheet_name, "sections": structured_sections})
+    return structured
+
+
+def _build_section_block(section_name: str, entries: list[dict]) -> dict:
+    has_multi_depth = any(len(entry["labels"]) >= 2 for entry in entries if entry.get("labels"))
+    if not has_multi_depth:
+        rows = []
+        for idx, entry in enumerate(entries, start=1):
+            labels = entry.get("labels") or []
+            label = labels[0] if labels else f"{section_name} #{idx}"
+            raw = entry.get("value")
+            value_list = _as_list_items(raw)
+            rows.append(
+                {
+                    "label": label,
+                    "value": _format_display_value(raw),
+                    "items": value_list,
+                    "align": "right" if _is_numeric(raw) else "left",
+                }
+            )
+        return {"mode": "list", "title": section_name, "rows": rows}
+
+    return _build_table_block(section_name, entries)
+
+
+def _build_table_block(section_name: str, entries: list[dict]) -> dict:
+    row_order: list[str] = []
+    col_order: list[str] = []
+    table: "OrderedDict[str, OrderedDict[str, str]]" = OrderedDict()
+
+    for entry in entries:
+        labels = entry.get("labels") or []
+        row_label = labels[0] if labels else section_name
+        if len(labels) > 2:
+            col_label = " / ".join(labels[1:])
+        elif len(labels) == 2:
+            col_label = labels[1]
+        else:
+            col_label = "값"
+
+        row_label = str(row_label)
+        col_label = str(col_label)
+
+        if row_label not in table:
+            table[row_label] = OrderedDict()
+            row_order.append(row_label)
+        if col_label not in col_order:
+            col_order.append(col_label)
+        table[row_label][col_label] = entry.get("value")
+
+    rows = []
+    for row_label in row_order:
+        value_cells = []
+        for col in col_order:
+            raw = table[row_label].get(col, "")
+            value_cells.append(
+                {
+                    "value": _format_display_value(raw),
+                    "align": "right" if _is_numeric(raw) else "left",
+                }
+            )
+        rows.append(
+            {
+                "row_label": row_label,
+                "values": value_cells,
+            }
+        )
+
+    return {
+        "mode": "table",
+        "title": section_name,
+        "headers": col_order,
+        "rows": rows,
+    }
+
+
 def create_fields_from_upload(submission: Submission, upload: Upload):
     """
     특정 업로드 파일을 기준으로 SubmissionField들을 생성/갱신
@@ -125,16 +675,41 @@ def create_fields_from_upload(submission: Submission, upload: Upload):
     """
     SubmissionField.objects.filter(submission=submission).delete()
 
-    raw_fields = extract_fields_from_upload(upload)
-    for idx, f in enumerate(raw_fields, start=1):
-        SubmissionField.objects.create(
-            submission=submission,
-            name=f.get("name") or f"field_{idx}",
-            label=f.get("label") or f"Field {idx}",
-            value=f.get("value") or "",
-            data_type=f.get("data_type") or SubmissionField.DataType.TEXT,
-            order=f.get("order") or idx,
-        )
+    normalized_payload = {}
+    normalized_records: list[dict] = []
+
+    fallback_field_specs: list[dict] = []
+
+    try:
+        normalized_payload, normalized_records = parse_with_ntpd(upload.file.path)
+    except NTPDParserUnavailable as exc:
+        logger.warning("ntpd parser unavailable, fallback to simple extractor: %s", exc)
+    except Exception as exc:
+        logger.exception("ntpd parsing 실패 (%s): %s", upload.file.name, exc)
+    finally:
+        if not normalized_records:
+            fallback_field_specs = extract_fields_from_upload(upload)
+            normalized_payload = {}
+
+    submission.normalized_payload = normalized_payload
+    submission.normalized_records = normalized_records
+    submission.save(update_fields=["normalized_payload", "normalized_records"])
+
+    if normalized_records:
+        overrides = submission.normalized_overrides or {}
+        effective_records = _apply_overrides_to_records(normalized_records, overrides) if overrides else normalized_records
+        _rebuild_submission_fields(submission, effective_records)
+    else:
+        SubmissionField.objects.filter(submission=submission).delete()
+        for idx, spec in enumerate(fallback_field_specs, start=1):
+            SubmissionField.objects.create(
+                submission=submission,
+                name=spec.get("name") or f"field_{idx}",
+                label=spec.get("label") or f"Field {idx}",
+                value=spec.get("value") or "",
+                data_type=spec.get("data_type") or SubmissionField.DataType.TEXT,
+                order=spec.get("order") or idx,
+            )
 
 
 # -------------------------------
@@ -399,4 +974,136 @@ def submission_review(request, submission_id: int):
             "event_form": SubmissionEventForm(),
             "fields": fields_qs,
         },
+    )
+
+
+@login_required
+def submission_data_view(request, submission_id: int):
+    """
+    차주/대주 모두가 사용할 수 있는 ntpd 추출 데이터 미리보기
+    - 시트 단위 → 섹션 단위 → 표 또는 리스트 형태로 렌더링
+    """
+    submission = get_object_or_404(Submission, id=submission_id)
+    user = request.user
+
+    if submission.borrower != user and not _is_lender_like(user):
+        return HttpResponseForbidden("접근 권한이 없습니다.")
+
+    payload = _get_effective_payload(submission)
+    records = _get_effective_records(submission)
+
+    spec_views = _build_spec_views_from_payload(payload)
+    sheet_map: "OrderedDict[str, list]" = OrderedDict(
+        (view["sheet"], list(view["sections"])) for view in spec_views
+    )
+
+    generic_views = _build_structured_sections(records) if records else []
+    for view in generic_views:
+        if view["sheet"] in sheet_map:
+            continue
+        sheet_map.setdefault(view["sheet"], []).extend(view["sections"])
+
+    sheet_views = [
+        {"sheet": sheet_name, "sections": sections}
+        for sheet_name, sections in sheet_map.items()
+        if sections
+    ]
+
+    back_url = None
+    back_label = None
+    if submission.borrower == user:
+        back_url = reverse("edit_submission", args=[submission.id])
+        back_label = "신청서 수정으로 돌아가기"
+    elif _is_lender_like(user):
+        back_url = reverse("submission_review", args=[submission.id])
+        back_label = "대주 검토 화면으로 돌아가기"
+
+    return render(
+        request,
+        "submissions/submission_data_view.html",
+        {
+            "submission": submission,
+            "records_count": len(records),
+            "sheet_views": sheet_views,
+            "has_records": bool(sheet_views),
+            "back_url": back_url,
+            "back_label": back_label,
+        },
+    )
+
+
+@login_required
+def edit_submission_data(request, submission_id: int):
+    submission = get_object_or_404(Submission, id=submission_id)
+    user = request.user
+
+    if submission.borrower != user:
+        return HttpResponseForbidden("차주만 데이터를 수정할 수 있습니다.")
+    if submission.status == Submission.Status.FINALIZED:
+        return HttpResponseForbidden("최종확정된 신청서는 수정할 수 없습니다.")
+    if not submission.normalized_records:
+        return HttpResponseForbidden("수정 가능한 데이터가 없습니다.")
+
+    base_records = submission.normalized_records or []
+    overrides = submission.normalized_overrides or {}
+    base_map = {}
+    initial = []
+
+    for rec in base_records:
+        key = _key_path_to_str(rec.get("key_path"))
+        label = " / ".join([str(x) for x in rec.get("label_path") or []])
+        base_value = str(rec.get("value") or "")
+        current_value = str(overrides.get(key, base_value))
+        base_map[key] = base_value
+        initial.append(
+            {
+                "key": key,
+                "label": label or "(라벨 없음)",
+                "value": current_value,
+            }
+        )
+
+    SubmissionDataFormSet = formset_factory(SubmissionDataForm, extra=0)
+    prefix = "records"
+
+    if request.method == "POST":
+        formset = SubmissionDataFormSet(request.POST, prefix=prefix)
+        if formset.is_valid():
+            new_overrides = {}
+            for form in formset:
+                key = form.cleaned_data.get("key")
+                value = form.cleaned_data.get("value") or ""
+                base_value = base_map.get(key, "")
+                if value != base_value:
+                    new_overrides[key] = value
+            submission.normalized_overrides = new_overrides
+            submission.save(update_fields=["normalized_overrides"])
+
+            effective_records = (
+                _apply_overrides_to_records(base_records, new_overrides)
+                if new_overrides
+                else base_records
+            )
+            if base_records:
+                _rebuild_submission_fields(submission, effective_records)
+
+            messages.success(request, "데이터를 저장했습니다.")
+            return redirect("edit_submission_data", submission_id=submission.id)
+    else:
+        formset = SubmissionDataFormSet(initial=initial, prefix=prefix)
+
+    return render(
+        request,
+        "submissions/submission_data_edit.html",
+        {
+            "submission": submission,
+            "formset": formset,
+        },
+    )
+class SubmissionDataForm(forms.Form):
+    key = forms.CharField(widget=forms.HiddenInput)
+    label = forms.CharField(widget=forms.HiddenInput)
+    value = forms.CharField(
+        widget=forms.Textarea(attrs={"rows": 2, "style": "width:100%;"}),
+        required=False,
     )

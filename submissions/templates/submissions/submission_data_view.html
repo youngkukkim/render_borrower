@@ -1,0 +1,225 @@
+{% extends "users/base.html" %}
+
+{% block title %}데이터 미리보기{% endblock %}
+
+{% block content %}
+<h1>추출 데이터 미리보기 — {{ submission.title }}</h1>
+
+<p style="color:#555; font-size:14px;">
+    총 {{ records_count }}개 항목이 ntpd extractor로 정규화되었습니다.
+    시트별로 확장된 표 구조를 아래에서 확인하세요.
+</p>
+
+{% if not has_records %}
+    <p>아직 추출된 데이터가 없습니다. 최신 양식을 다시 업로드한 뒤 새로고침해 주세요.</p>
+{% else %}
+    {% for sheet in sheet_views %}
+        <section style="margin-bottom:24px; display:block; width:fit-content; max-width:100%;">
+            <div style="background:#f2f5fb; padding:10px 14px; border-left:4px solid #4d7cfe; border-radius:6px 6px 0 0;">
+                <h2 style="margin:0; font-size:18px;">{{ sheet.sheet }}</h2>
+            </div>
+            <div style="border:1px solid #d9e2ff; border-top:0; padding:10px; border-radius:0 0 6px 6px; width:auto; display:inline-block; max-width:100%;">
+            {% for section in sheet.sections %}
+                <div style="margin:8px 0; padding:8px 10px; border:1px solid #ddd; border-radius:6px; background:#fff; display:block; width:auto;">
+                    <h3 style="margin:0 0 6px 0; font-size:15px;">{{ section.title }}</h3>
+
+                    {% if section.mode == "plain_table" %}
+                        <div style="overflow-x:auto; display:block;">
+                            <table style="width:auto; min-width:320px; border-collapse:collapse; font-size:12px; border-left:1px solid #e0e0e0; border-right:1px solid #e0e0e0; display:inline-block;">
+                                <thead>
+                                <tr>
+                                    {% for header in section.headers %}
+                                        <th style="text-align:center; padding:4px 5px; border-bottom:2px solid #d9d9d9; background:#f8f8f8; border-left:1px solid #e0e0e0;">
+                                            {{ header }}
+                                        </th>
+                                    {% endfor %}
+                                </tr>
+                                </thead>
+                                <tbody>
+                                {% for row in section.rows %}
+                                    <tr>
+                                        {% for cell in row %}
+                                            <td style="padding:4px 5px; border-bottom:1px solid #eee; border-left:1px solid #e0e0e0; text-align:{{ cell.align }};">
+                                                {{ cell.value }}
+                                            </td>
+                                        {% endfor %}
+                                    </tr>
+                                {% endfor %}
+                                {% if section.total %}
+                                    <tr style="font-weight:bold; background:#fafafa;">
+                                        {% if section.total_label %}
+                                            <td style="padding:4px 5px; border-top:2px solid #ccc; text-align:left; border-left:1px solid #e0e0e0;">
+                                                {{ section.total_label }}
+                                            </td>
+                                        {% endif %}
+                                        {% for cell in section.total %}
+                                            <td style="padding:4px 5px; border-top:2px solid #ccc; text-align:{{ cell.align }}; border-left:1px solid #e0e0e0;">
+                                                {{ cell.value }}
+                                            </td>
+                                        {% endfor %}
+                                    </tr>
+                                {% endif %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% elif section.mode == "period_table" %}
+                        <div style="overflow-x:auto; display:block;">
+                            <table style="width:auto; min-width:360px; border-collapse:collapse; font-size:12.5px; border-left:1px solid #e0e0e0; border-right:1px solid #e0e0e0; display:inline-block;">
+                                <thead>
+                                <tr>
+                                    <th style="text-align:center; padding:4px 5px; border-bottom:2px solid #d9d9d9; background:#f8f8f8; border-left:1px solid #e0e0e0;"
+                                        {% if section.has_subheaders %}rowspan="2"{% endif %}>
+                                        구분
+                                    </th>
+                                    {% for column in section.columns %}
+                                        {% if column.subheaders %}
+                                            <th style="text-align:center; padding:4px 5px; border-bottom:2px solid #d9d9d9; background:#f8f8f8; border-left:1px solid #e0e0e0;"
+                                                colspan="{{ column.subheaders|length }}">
+                                                {{ column.label }}
+                                            </th>
+                                        {% else %}
+                                            <th style="text-align:center; padding:4px 5px; border-bottom:2px solid #d9d9d9; background:#f8f8f8; border-left:1px solid #e0e0e0;"
+                                                {% if section.has_subheaders %}rowspan="2"{% endif %}>
+                                                {{ column.label }}
+                                            </th>
+                                        {% endif %}
+                                    {% endfor %}
+                                </tr>
+                                {% if section.has_subheaders %}
+                                    <tr>
+                                        {% for column in section.columns %}
+                                            {% if column.subheaders %}
+                                                {% for sub in column.subheaders %}
+                                                    <th style="text-align:center; padding:4px 5px; border-bottom:2px solid #d9d9d9; background:#f8f8f8; border-left:1px solid #e0e0e0;">
+                                                        {{ sub.label }}
+                                                    </th>
+                                                {% endfor %}
+                                            {% endif %}
+                                        {% endfor %}
+                                    </tr>
+                                {% endif %}
+                                </thead>
+                                <tbody>
+                                {% for row in section.rows %}
+                                    {% if row.indent|default:0 > 0 %}
+                                        {% with label_bg="#ffffff" label_color="#333333" %}
+                                            <tr>
+                                                <td style="padding:4px 5px; border-bottom:1px solid #eee; font-weight:bold; padding-left:{{ row.indent_px|default:0 }}px; text-align:center; border-left:1px solid #e0e0e0; color:{{ label_color }}; background:{{ label_bg }};">
+                                                    {{ row.label }}
+                                                </td>
+                                                {% for cell in row.cells %}
+                                                    {% if cell.type == "multi" %}
+                                                        {% for subcell in cell.values %}
+                                                            <td style="padding:4px 5px; border-bottom:1px solid #eee; text-align:{{ subcell.align }}; border-left:1px solid #e0e0e0;">
+                                                                {{ subcell.value }}
+                                                            </td>
+                                                        {% endfor %}
+                                                    {% else %}
+                                                        <td style="padding:4px 5px; border-bottom:1px solid #eee; text-align:{{ cell.align }}; border-left:1px solid #e0e0e0;">
+                                                            {{ cell.value }}
+                                                        </td>
+                                                    {% endif %}
+                                                {% endfor %}
+                                            </tr>
+                                        {% endwith %}
+                                    {% else %}
+                                        {% with label_bg="#f5f8ff" label_color="#1a2b6b" %}
+                                            <tr>
+                                                <td style="padding:4px 5px; border-bottom:1px solid #eee; font-weight:bold; padding-left:{{ row.indent_px|default:0 }}px; text-align:center; border-left:1px solid #e0e0e0; color:{{ label_color }}; background:{{ label_bg }};">
+                                                    {{ row.label }}
+                                                </td>
+                                                {% for cell in row.cells %}
+                                                    {% if cell.type == "multi" %}
+                                                        {% for subcell in cell.values %}
+                                                            <td style="padding:4px 5px; border-bottom:1px solid #eee; text-align:{{ subcell.align }}; border-left:1px solid #e0e0e0;">
+                                                                {{ subcell.value }}
+                                                            </td>
+                                                        {% endfor %}
+                                                    {% else %}
+                                                        <td style="padding:4px 5px; border-bottom:1px solid #eee; text-align:{{ cell.align }}; border-left:1px solid #e0e0e0;">
+                                                            {{ cell.value }}
+                                                        </td>
+                                                    {% endif %}
+                                                {% endfor %}
+                                            </tr>
+                                        {% endwith %}
+                                    {% endif %}
+                                {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% elif section.mode == "table" %}
+                        <div style="overflow-x:auto; display:block;">
+                            <table style="width:auto; min-width:340px; border-collapse:collapse; font-size:12.5px; border-left:1px solid #e0e0e0; border-right:1px solid #e0e0e0; display:inline-block;">
+                                <thead>
+                                <tr>
+                                    <th style="text-align:center; padding:4px 5px; border-bottom:2px solid #d9d9d9; background:#f8f8f8; width:20%; border-left:1px solid #e0e0e0;">
+                                        구분
+                                    </th>
+                                    {% for header in section.headers %}
+                                        <th style="text-align:center; padding:4px 5px; border-bottom:2px solid #d9d9d9; background:#f8f8f8; border-left:1px solid #e0e0e0;">
+                                            {{ header }}
+                                        </th>
+                                    {% endfor %}
+                                </tr>
+                                </thead>
+                                <tbody>
+                                {% for row in section.rows %}
+                                    <tr>
+                                        <td style="padding:4px 5px; border-bottom:1px solid #eee; font-weight:bold; text-align:center; border-left:1px solid #e0e0e0;">
+                                            {{ row.row_label }}
+                                        </td>
+                                        {% for cell in row.values %}
+                                            <td style="padding:4px 5px; border-bottom:1px solid #eee; text-align:{{ cell.align }}; border-left:1px solid #e0e0e0;">
+                                                {{ cell.value }}
+                                            </td>
+                                        {% endfor %}
+                                    </tr>
+                                {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <table style="width:auto; min-width:300px; border-collapse:collapse; font-size:12.5px;">
+                            <tbody>
+                            {% for row in section.rows %}
+                                <tr>
+                                    <td style="width:auto; padding:4px 8px; border-bottom:1px solid #f0f0f0; color:#333; text-align:left; white-space:nowrap;">
+                                        {{ row.label }}
+                                    </td>
+                                    <td style="padding:4px 5px; border-bottom:1px solid #f0f0f0; text-align:left;">
+                                        {% if row.items %}
+                                            <div style="display:flex; flex-direction:column; gap:2px;">
+                                                {% for item in row.items %}
+                                                    <div style="white-space:pre-line;">{{ item }}</div>
+                                                {% endfor %}
+                                            </div>
+                                        {% else %}
+                                            <div style="white-space:pre-line; text-align:left;">
+                                                {{ row.value }}
+                                            </div>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    {% endif %}
+                </div>
+            {% empty %}
+                <p>표시할 섹션이 없습니다.</p>
+            {% endfor %}
+            </div>
+        </section>
+    {% empty %}
+        <p>시트 정보를 구성할 수 없습니다.</p>
+    {% endfor %}
+{% endif %}
+
+{% if back_url %}
+    <p style="margin-top:24px;">
+        <a href="{{ back_url }}">{{ back_label }}</a>
+    </p>
+{% endif %}
+
+{% endblock %}

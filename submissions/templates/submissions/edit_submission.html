@@ -29,11 +29,19 @@
     <!-- 파일에서 추출된 가변 필드 -->
     <fieldset style="margin-bottom:16px;">
         <legend>파일에서 추출된 재무 필드</legend>
-        {% if dynamic_form.fields %}
-            {{ dynamic_form.as_p }}
-        {% else %}
-            <p>아직 추출된 필드가 없습니다. 파일을 업로드했는지 확인해 주세요.</p>
-        {% endif %}
+        <p style="margin-bottom:8px; font-size:13px;">
+            <a href="{% url 'submission_data_view' submission.id %}">
+                ➜ 정규화된 데이터 전체 미리보기
+            </a>
+            {% if submission.borrower == request.user and submission.status != "FINALIZED" %}
+                &nbsp;|&nbsp;
+                <a href="{% url 'edit_submission_data' submission.id %}">데이터 수정하기</a>
+            {% endif %}
+        </p>
+        <p style="color:#555; font-size:13px; margin-top:4px;">
+            상세 값 확인은 위 미리보기 화면에서만 제공됩니다.
+            이 영역에서는 파일 업로드 여부만 확인해 주세요.
+        </p>
     </fieldset>
 
     <!-- 파일 추가 업로드 -->

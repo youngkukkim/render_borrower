@@ -10,10 +10,14 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
+import sys
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = BASE_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 
 # Quick-start development settings - unsuitable for production
@@ -134,3 +138,10 @@ LOGOUT_REDIRECT_URL = "/"
 # settings.py 하단에 추가
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 5000
+DATA_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024  # 5MB 허용
+
+# External Excel parsing modules (ntpd package)
+NTPD_LABELS_MODULE = "ntpd.labels"
+NTPD_EXTRACTOR_MODULE = "ntpd.excel_label_extractor"
